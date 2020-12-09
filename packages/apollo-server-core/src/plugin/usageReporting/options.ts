@@ -193,6 +193,11 @@ export interface ApolloServerPluginUsageReportingOptions<TContext> {
    * about how the signature relates to the operation you executed.
    */
   calculateSignature?: (ast: DocumentNode, operationName: string) => string;
+  /**
+   * Specify the function for usage report transmission. If not supplied, the
+   * plugin will send to Apollo's reporting API directly over HTTP.
+   */
+  reportTransport?: (compressedReport: Buffer) => Promise<void>;
   //#endregion
 }
 

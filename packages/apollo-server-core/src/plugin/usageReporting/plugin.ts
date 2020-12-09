@@ -200,6 +200,71 @@ export function ApolloServerPluginUsageReporting<TContext>(
         });
       }
 
+      const httpTransport = async (compressedReport: Buffer) => {
+        // Wrap fetch with async-retry for automatic retrying
+        const response: Response = await retry(
+          // Retry on network errors and 5xx HTTP
+          // responses.
+          async () => {
+            const curResponse = await fetch(
+              (options.endpointUrl ||
+                'https://usage-reporting.api.apollographql.com') +
+                '/api/ingress/traces',
+              {
+                method: 'POST',
+                headers: {
+                  'user-agent': 'ApolloServerPluginUsageReporting',
+                  'x-api-key': key,
+                  'content-encoding': 'gzip',
+                },
+                body: compressedReport,
+                agent: options.requestAgent,
+              },
+            );
+
+            if (curResponse.status >= 500 && curResponse.status < 600) {
+              throw new Error(
+                `HTTP status ${curResponse.status}, ${
+                  (await curResponse.text()) || '(no body)'
+                }`,
+              );
+            } else {
+              return curResponse;
+            }
+          },
+          {
+            retries: (options.maxAttempts || 5) - 1,
+            minTimeout: options.minimumRetryDelayMs || 100,
+            factor: 2,
+          },
+        ).catch((err: Error) => {
+          throw new Error(
+            `Error sending report to Apollo servers: ${err.message}`,
+          );
+        });
+
+        if (response.status < 200 || response.status >= 300) {
+          // Note that we don't expect to see a 3xx here because request follows
+          // redirects.
+          throw new Error(
+            `Error sending report to Apollo servers: HTTP status ${
+              response.status
+            }, ${(await response.text()) || '(no body)'}`,
+          );
+        }
+        if (options.debugPrintReports) {
+          // In terms of verbosity, and as the name of this option suggests, this
+          // message is either an "info" or a "debug" level message.  However,
+          // we are using `warn` here for compatibility reasons since the
+          // `debugPrintReports` flag pre-dated the existence of log-levels and
+          // changing this to also require `debug: true` (in addition to
+          // `debugPrintReports`) just to reach the level of verbosity to produce
+          // the output would be a breaking change.  The "warn" level is on by
+          // default.  There is a similar theory and comment applied above.
+          logger.warn(`Apollo usage report: status ${response.status}`);
+        }
+      }
+
       // Needs to be an arrow function to be confident that key is defined.
       const sendReport = async (executableSchemaId: string): Promise<void> => {
         const reportData = getReportData(executableSchemaId);
@@ -251,68 +316,9 @@ export function ApolloServerPluginUsageReporting<TContext>(
           });
         });
 
-        // Wrap fetch with async-retry for automatic retrying
-        const response: Response = await retry(
-          // Retry on network errors and 5xx HTTP
-          // responses.
-          async () => {
-            const curResponse = await fetch(
-              (options.endpointUrl ||
-                'https://usage-reporting.api.apollographql.com') +
-                '/api/ingress/traces',
-              {
-                method: 'POST',
-                headers: {
-                  'user-agent': 'ApolloServerPluginUsageReporting',
-                  'x-api-key': key,
-                  'content-encoding': 'gzip',
-                },
-                body: compressed,
-                agent: options.requestAgent,
-              },
-            );
+        const reportTransport = options.reportTransport ?? httpTransport;
 
-            if (curResponse.status >= 500 && curResponse.status < 600) {
-              throw new Error(
-                `HTTP status ${curResponse.status}, ${
-                  (await curResponse.text()) || '(no body)'
-                }`,
-              );
-            } else {
-              return curResponse;
-            }
-          },
-          {
-            retries: (options.maxAttempts || 5) - 1,
-            minTimeout: options.minimumRetryDelayMs || 100,
-            factor: 2,
-          },
-        ).catch((err: Error) => {
-          throw new Error(
-            `Error sending report to Apollo servers: ${err.message}`,
-          );
-        });
-
-        if (response.status < 200 || response.status >= 300) {
-          // Note that we don't expect to see a 3xx here because request follows
-          // redirects.
-          throw new Error(
-            `Error sending report to Apollo servers: HTTP status ${
-              response.status
-            }, ${(await response.text()) || '(no body)'}`,
-          );
-        }
-        if (options.debugPrintReports) {
-          // In terms of verbosity, and as the name of this option suggests, this
-          // message is either an "info" or a "debug" level message.  However,
-          // we are using `warn` here for compatibility reasons since the
-          // `debugPrintReports` flag pre-dated the existence of log-levels and
-          // changing this to also require `debug: true` (in addition to
-          // `debugPrintReports`) just to reach the level of verbosity to produce
-          // the output would be a breaking change.  The "warn" level is on by
-          // default.  There is a similar theory and comment applied above.
-          logger.warn(`Apollo usage report: status ${response.status}`);
-        }
+        reportTransport(compressed);
       };
 
       requestDidStartHandler = ({
